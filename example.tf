@@ -1,3 +1,4 @@
+
 provider "aws" {
   region     = var.region
   access_key = var.abc
@@ -6,7 +7,7 @@ provider "aws" {
 
 data "aws_caller_identity" "current" {}
 
-# S3 Bucket for CloudTrail logs 
+# S3 Bucket for CloudTrail logs
 resource "aws_s3_bucket" "my_bucket" {
   bucket = "my-unique-cloudtrail-logs-bucket-casestudy-6"
 
@@ -52,6 +53,16 @@ resource "aws_s3_bucket_policy" "my_bucket_policy" {
       }
     ]
   })
+}
+
+# S3 Public Access Block
+resource "aws_s3_bucket_public_access_block" "my_bucket_access_block" {
+  bucket = aws_s3_bucket.my_bucket.id
+
+  block_public_acls   = true
+  block_public_policy = true
+  ignore_public_acls  = true
+  restrict_public_buckets = true
 }
 
 # VPC Endpoint for accessing S3 without internet
@@ -185,7 +196,6 @@ resource "aws_instance" "my_instance" {
 
     aws s3 cp s3://my-unique-cloudtrail-logs-bucket-casestudy-6/cloudwatch-config.json /var/log
 
-    #!/bin/bash
     s3_BUCKET="my-unique-cloudtrail-logs-bucket-casestudy-6"
 
     if [ -z "$S3_BUCKET" ]; then
@@ -193,13 +203,49 @@ resource "aws_instance" "my_instance" {
     exit 1
     fi
 
-    
-     
+    # List all objects from S3
+    echo "Listing all files and objects in the s3 bucket : $S3_BUCKET"
+    aws s3 ls "s3://$S3_BUCKET/" --recursive
+
+    if [ $? -eq 0 ]; then 
+    echo "Successfully listed all objects in the S3 bucket"
+    else 
+    echo "Failed to list objects in the S3 bucket"
+    exit 1
+    fi
   EOF
 
   tags = {
     Name = "MyEC2Instance"
   }
+}
+
+# SSM Parameter for CloudWatch Agent Configuration
+resource "aws_ssm_parameter" "cloudwatch_config" {
+  name  = "/my/cloudwatch/config"
+  type  = "String"
+  value = <<-EOF
+  {
+    "agent": {
+      "metrics_collection_interval": 60,
+      "logfile": "/opt/aws/amazon-cloudwatch-agent/logs/amazon-cloudwatch-agent.log"
+    },
+    "logs": {
+      "logs_collected": {
+        "files": {
+          "collect_list": [
+            {
+              "file_path": "/var/log/messages",
+              "log_group_name": "/aws/ec2/instance/logs",
+              "log_stream_name": "{instance_id}/messages",
+              "timestamp_format": "%b %d %H:%M:%S"
+            }
+          ]
+        }
+      }
+    }
+  }
+  EOF
 }
 
 # CloudTrail to log EC2 and S3 activities
@@ -210,7 +256,6 @@ resource "aws_cloudtrail" "my_trail" {
   is_multi_region_trail         = true
   enable_log_file_validation    = true
 
-
   event_selector {
     read_write_type           = "All"
     include_management_events = true
@@ -220,4 +265,62 @@ resource "aws_cloudtrail" "my_trail" {
       values = ["arn:aws:s3:::my-unique-cloudtrail-logs-bucket-casestudy-6/"]
     }
   }
+}
+
+# VPC for EC2 Instances
+resource "aws_vpc" "my_vpc" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+  tags = {
+    Name = "my-vpc"
+  }
+}
+
+# Internet Gateway
+resource "aws_internet_gateway" "my_ig" {
+  vpc_id = aws_vpc.my_vpc.id
+
+  tags = {
+    Name = "my-internet-gateway"
+  }
+}
+
+# Public Subnet
+resource "aws_subnet" "my_subnet" {
+  vpc_id                  = aws_vpc.my_vpc.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = "us-east-2a"
+  map_public_ip_on_launch = true
+  tags = {
+    Name = "my-subnet"
+  }
+}
+
+# Route Table
+resource "aws_route_table" "public_route_table" {
+  vpc_id = aws_vpc.my_vpc.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.my_ig.id
+  }
+
+  tags = {
+    Name = "my-public-route-table"
+  }
+}
+
+# Route Table Association
+resource "aws_route_table_association" "public_route_table_association" {
+  subnet_id      = aws_subnet.my_subnet.id
+  route_table_id = aws_route_table.public_route_table.id
+}
+
+output "vpc_id" {
+  value = aws_vpc.my_vpc.id
+}
+
+output "subnet_id" {
+  value = aws_subnet.my_subnet.id
 }
